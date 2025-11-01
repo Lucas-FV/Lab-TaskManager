@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import '../models/task.dart';
 import '../services/database_service.dart';
-
-enum FilterStatus { all, pending, completed }
+import '../widgets/task_card.dart';
+import 'task_form_screen.dart';
 
 class TaskListScreen extends StatefulWidget {
   const TaskListScreen({super.key});
@@ -13,12 +13,8 @@ class TaskListScreen extends StatefulWidget {
 
 class _TaskListScreenState extends State<TaskListScreen> {
   List<Task> _tasks = [];
-
-  List<Task> _allTasks = []; // Guarda TODAS as tarefas do banco
-  List<Task> _filteredTasks = []; // Guarda as tarefas a serem exibidas na tela
-  FilterStatus _currentFilter = FilterStatus.all; // O filtro começa em "Todas"
-  final _titleController = TextEditingController();
-  String _selectedPriority = 'medium'; // Valor padrão para a prioridade
+  String _filter = 'all'; // all, completed, pending
+  bool _isLoading = false;
 
   @override
   void initState() {
@@ -27,142 +23,283 @@ class _TaskListScreenState extends State<TaskListScreen> {
   }
 
   Future<void> _loadTasks() async {
+    setState(() => _isLoading = true);
     final tasks = await DatabaseService.instance.readAll();
     setState(() {
-      _allTasks = tasks;
+      _tasks = tasks;
+      _isLoading = false;
     });
-    _applyFilter(); // Aplica o filtro sempre que as tarefas são carregadas
   }
 
-  Future<void> _addTask() async {
-    if (_titleController.text.trim().isEmpty) return;
-
-    final task = Task(
-      title: _titleController.text.trim(),
-      priority: _selectedPriority, // Use a prioridade selecionada
-    );
-
-    await DatabaseService.instance.create(task);
-    _titleController.clear();
-    _loadTasks();
+  List<Task> get _filteredTasks {
+    switch (_filter) {
+      case 'completed':
+        return _tasks.where((t) => t.completed).toList();
+      case 'pending':
+        return _tasks.where((t) => !t.completed).toList();
+      default:
+        return _tasks;
+    }
   }
 
   Future<void> _toggleTask(Task task) async {
     final updated = task.copyWith(completed: !task.completed);
     await DatabaseService.instance.update(updated);
-    _loadTasks();
+    await _loadTasks();
   }
 
-  Future<void> _deleteTask(String id) async {
-    await DatabaseService.instance.delete(id);
-    _loadTasks();
-  }
-
-  void _applyFilter() {
-    setState(() {
-      if (_currentFilter == FilterStatus.pending) {
-        _filteredTasks = _allTasks.where((task) => !task.completed).toList();
-      } else if (_currentFilter == FilterStatus.completed) {
-        _filteredTasks = _allTasks.where((task) => task.completed).toList();
-      } else {
-        _filteredTasks = List.from(_allTasks); // Cópia da lista completa
-      }
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Minhas Tarefas'),
-      ),
-      body: Column(
-        children: [
-          // ✨ PASSO 5: Widget para seleção de filtro
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: SegmentedButton<FilterStatus>(
-              segments: const <ButtonSegment<FilterStatus>>[
-                ButtonSegment(value: FilterStatus.all, label: Text('Todas')),
-                ButtonSegment(value: FilterStatus.pending, label: Text('Pendentes')),
-                ButtonSegment(value: FilterStatus.completed, label: Text('Completas')),
-              ],
-              selected: {_currentFilter},
-              onSelectionChanged: (Set<FilterStatus> newSelection) {
-                setState(() {
-                  _currentFilter = newSelection.first;
-                  _applyFilter(); // Aplica o filtro ao mudar a seleção
-                });
-              },
-            ),
+  Future<void> _deleteTask(Task task) async {
+    // Confirmar exclusão
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirmar exclusão'),
+        content: Text('Deseja realmente excluir "${task.title}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
           ),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _titleController,
-                    decoration: const InputDecoration(
-                      hintText: 'Nova tarefa...',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                DropdownButton<String>(
-                  value: _selectedPriority,
-                  onChanged: (String? newValue) {
-                    setState(() {
-                      _selectedPriority = newValue!;
-                    });
-                  },
-                  items: <String>['low', 'medium', 'high']
-                      .map<DropdownMenuItem<String>>((String value) {
-                    return DropdownMenuItem<String>(
-                      value: value,
-                      child: Text(value[0].toUpperCase() + value.substring(1)),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: _addTask,
-                  child: const Text('Adicionar'),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            // ✨ PASSO 5: ListView atualizado para usar a lista filtrada
-            child: ListView.builder(
-              itemCount: _filteredTasks.length,
-              itemBuilder: (context, index) {
-                final task = _filteredTasks[index];
-                return ListTile(
-                  leading: Checkbox(
-                    value: task.completed,
-                    onChanged: (_) => _toggleTask(task),
-                  ),
-                  title: Text(
-                    task.title,
-                    style: TextStyle(
-                      decoration: task.completed
-                          ? TextDecoration.lineThrough
-                          : null,
-                    ),
-                  ),
-                  subtitle: Text('Prioridade: ${task.priority}'),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete),
-                    onPressed: () => _deleteTask(task.id),
-                  ),
-                );
-              },
-            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Excluir'),
           ),
         ],
       ),
     );
+
+    if (confirmed == true) {
+      await DatabaseService.instance.delete(task.id);
+      await _loadTasks();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Tarefa excluída'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _openTaskForm([Task? task]) async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TaskFormScreen(task: task),
+      ),
+    );
+
+    if (result == true) {
+      await _loadTasks();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filteredTasks = _filteredTasks;
+    final stats = _calculateStats();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Minhas Tarefas'),
+        backgroundColor: Colors.blue,
+        foregroundColor: Colors.white,
+        elevation: 2,
+        actions: [
+          // Filtro
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.filter_list),
+            onSelected: (value) => setState(() => _filter = value),
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'all',
+                child: Row(
+                  children: [
+                    Icon(Icons.list),
+                    SizedBox(width: 8),
+                    Text('Todas'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'pending',
+                child: Row(
+                  children: [
+                    Icon(Icons.pending_actions),
+                    SizedBox(width: 8),
+                    Text('Pendentes'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'completed',
+                child: Row(
+                  children: [
+                    Icon(Icons.check_circle),
+                    SizedBox(width: 8),
+                    Text('Concluídas'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+
+      body: Column(
+        children: [
+          // Card de Estatísticas
+          if (_tasks.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Colors.blue, Colors.blueAccent],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    blurRadius: 8,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _buildStatItem(
+                    Icons.list,
+                    'Total',
+                    stats['total'].toString(),
+                  ),
+                  _buildStatItem(
+                    Icons.pending_actions,
+                    'Pendentes',
+                    stats['pending'].toString(),
+                  ),
+                  _buildStatItem(
+                    Icons.check_circle,
+                    'Concluídas',
+                    stats['completed'].toString(),
+                  ),
+                ],
+              ),
+            ),
+
+          // Lista de Tarefas
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : filteredTasks.isEmpty
+                ? _buildEmptyState()
+                : RefreshIndicator(
+              onRefresh: _loadTasks,
+              child: ListView.builder(
+                padding: const EdgeInsets.only(bottom: 80),
+                itemCount: filteredTasks.length,
+                itemBuilder: (context, index) {
+                  final task = filteredTasks[index];
+                  return TaskCard(
+                    task: task,
+                    onTap: () => _openTaskForm(task),
+                    onToggle: () => _toggleTask(task),
+                    onDelete: () => _deleteTask(task),
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
+      ),
+
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _openTaskForm(),
+        icon: const Icon(Icons.add),
+        label: const Text('Nova Tarefa'),
+        backgroundColor: Colors.blue,
+        foregroundColor: Colors.white,
+      ),
+    );
+  }
+
+  Widget _buildStatItem(IconData icon, String label, String value) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, color: Colors.white, size: 32),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 24,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 12,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEmptyState() {
+    String message;
+    IconData icon;
+
+    switch (_filter) {
+      case 'completed':
+        message = 'Nenhuma tarefa concluída ainda';
+        icon = Icons.check_circle_outline;
+        break;
+      case 'pending':
+        message = 'Nenhuma tarefa pendente';
+        icon = Icons.pending_actions;
+        break;
+      default:
+        message = 'Nenhuma tarefa cadastrada';
+        icon = Icons.task_alt;
+    }
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 100, color: Colors.grey.shade300),
+          const SizedBox(height: 16),
+          Text(
+            message,
+            style: TextStyle(
+              fontSize: 18,
+              color: Colors.grey.shade600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: () => _openTaskForm(),
+            icon: const Icon(Icons.add),
+            label: const Text('Criar primeira tarefa'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Map<String, int> _calculateStats() {
+    return {
+      'total': _tasks.length,
+      'completed': _tasks.where((t) => t.completed).length,
+      'pending': _tasks.where((t) => !t.completed).length,
+    };
   }
 }
