@@ -1,5 +1,6 @@
 import 'package:uuid/uuid.dart';
 
+
 class Task {
   final String id;
   final String title;
@@ -7,6 +8,8 @@ class Task {
   final bool completed;
   final String priority;
   final DateTime createdAt;
+  final DateTime? dueDate;
+  final String? categoryId;
 
   Task({
     String? id,
@@ -15,6 +18,8 @@ class Task {
     this.completed = false,
     this.priority = 'medium',
     DateTime? createdAt,
+    this.dueDate,
+    this.categoryId,
   })  : id = id ?? const Uuid().v4(),
         createdAt = createdAt ?? DateTime.now();
 
@@ -26,6 +31,8 @@ class Task {
       'completed': completed ? 1 : 0,
       'priority': priority,
       'createdAt': createdAt.toIso8601String(),
+      'dueDate': dueDate?.toIso8601String(),
+      'categoryId': categoryId,
     };
   }
 
@@ -37,6 +44,8 @@ class Task {
       completed: map['completed'] == 1,
       priority: map['priority'] ?? 'medium',
       createdAt: DateTime.parse(map['createdAt']),
+      dueDate: map['dueDate'] != null ? DateTime.parse(map['dueDate']) : null,
+      categoryId: map['categoryId'],
     );
   }
 
@@ -45,6 +54,8 @@ class Task {
     String? description,
     bool? completed,
     String? priority,
+    DateTime? dueDate,
+    String? categoryId,
   }) {
     return Task(
       id: id,
@@ -53,6 +64,8 @@ class Task {
       completed: completed ?? this.completed,
       priority: priority ?? this.priority,
       createdAt: createdAt,
+      dueDate: dueDate ?? this.dueDate,
+      categoryId: categoryId ?? this.categoryId,
     );
   }
 }

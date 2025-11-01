@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import '../models/task.dart';
+import '../models/category.dart'; // <-- 1. IMPORTAR O NOVO MODELO
 import '../services/database_service.dart';
 
 class TaskFormScreen extends StatefulWidget {
@@ -18,11 +20,20 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
 
   String _priority = 'medium';
   bool _completed = false;
+  DateTime? _dueDate;
   bool _isLoading = false;
+
+  // --- 2. ADICIONAR VARIÁVEIS PARA CATEGORIA ---
+  List<Category> _categories = [];
+  String? _selectedCategoryId;
+  bool _isLoadingCategories = true;
 
   @override
   void initState() {
     super.initState();
+
+    // 3. CARREGAR AS CATEGORIAS
+    _loadCategories();
 
     // Se estiver editando, preencher campos
     if (widget.task != null) {
@@ -30,7 +41,28 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
       _descriptionController.text = widget.task!.description;
       _priority = widget.task!.priority;
       _completed = widget.task!.completed;
+      _dueDate = widget.task!.dueDate;
+      _selectedCategoryId = widget.task!.categoryId; // <-- 4. INICIALIZAR CATEGORIA
     }
+  }
+
+  // 5. NOVA FUNÇÃO PARA CARREGAR CATEGORIAS
+  Future<void> _loadCategories() async {
+    setState(() => _isLoadingCategories = true);
+    // Busca as categorias do banco de dados
+    final categories = await DatabaseService.instance.readAllCategories();
+    setState(() {
+      _categories = categories;
+      _isLoadingCategories = false;
+
+      // Garante que o ID selecionado (na edição) é válido
+      if (widget.task != null && widget.task!.categoryId != null) {
+        final ids = categories.map((c) => c.id).toList();
+        if (!ids.contains(widget.task!.categoryId)) {
+          _selectedCategoryId = null;
+        }
+      }
+    });
   }
 
   @override
@@ -38,6 +70,22 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
     _titleController.dispose();
     _descriptionController.dispose();
     super.dispose();
+  }
+
+  Future<void> _selectDueDate() async {
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: _dueDate ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2101),
+      helpText: 'Selecione a data de vencimento',
+    );
+
+    if (pickedDate != null && pickedDate != _dueDate) {
+      setState(() {
+        _dueDate = pickedDate;
+      });
+    }
   }
 
   Future<void> _saveTask() async {
@@ -55,6 +103,8 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
           description: _descriptionController.text.trim(),
           priority: _priority,
           completed: _completed,
+          dueDate: _dueDate,
+          categoryId: _selectedCategoryId, // <-- 6. SALVAR A CATEGORIA
         );
         await DatabaseService.instance.create(newTask);
 
@@ -74,6 +124,8 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
           description: _descriptionController.text.trim(),
           priority: _priority,
           completed: _completed,
+          dueDate: _dueDate,
+          categoryId: _selectedCategoryId, // <-- 6. SALVAR A CATEGORIA
         );
         await DatabaseService.instance.update(updatedTask);
 
@@ -117,7 +169,8 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
       ),
-      body: _isLoading
+      // 7. ATUALIZAR O BODY PARA MOSTRAR LOADING DE CATEGORIA
+      body: _isLoading || _isLoadingCategories
           ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -126,7 +179,7 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Campo de Título
+              // --- Campo de Título ---
               TextFormField(
                 controller: _titleController,
                 decoration: const InputDecoration(
@@ -150,7 +203,7 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
 
               const SizedBox(height: 16),
 
-              // Campo de Descrição
+              // --- Campo de Descrição ---
               TextFormField(
                 controller: _descriptionController,
                 decoration: const InputDecoration(
@@ -167,8 +220,86 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
 
               const SizedBox(height: 16),
 
-              // Dropdown de Prioridade
+              // --- 8. DROPDOWN DE CATEGORIA ADICIONADO ---
               DropdownButtonFormField<String>(
+                value: _selectedCategoryId,
+                decoration: const InputDecoration(
+                  labelText: 'Categoria',
+                  prefixIcon: Icon(Icons.category_outlined),
+                  border: OutlineInputBorder(),
+                ),
+                isExpanded: true,
+                // Itens do Dropdown
+                items: [
+                  // Opção nula (Sem Categoria)
+                  const DropdownMenuItem(
+                    value: null,
+                    child: Text(
+                      'Nenhuma',
+                      style: TextStyle(fontStyle: FontStyle.italic),
+                    ),
+                  ),
+                  // Lista de categorias do banco
+                  ..._categories.map((category) {
+                    return DropdownMenuItem(
+                      value: category.id,
+                      child: Row(
+                        children: [
+                          Icon(Icons.circle,
+                              color: category.displayColor, size: 16),
+                          const SizedBox(width: 8),
+                          Text(category.name),
+                        ],
+                      ),
+                    );
+                  }),
+                ],
+                onChanged: (value) {
+                  setState(() => _selectedCategoryId = value);
+                },
+              ),
+
+              const SizedBox(height: 16),
+
+              // --- Campo de Data (DatePicker) ---
+              InputDecorator(
+                decoration: const InputDecoration(
+                  labelText: 'Data de Vencimento',
+                  prefixIcon: Icon(Icons.calendar_today),
+                  border: OutlineInputBorder(),
+                ),
+                child: InkWell(
+                  onTap: _selectDueDate,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        _dueDate == null
+                            ? 'Nenhuma data selecionada'
+                            : DateFormat('dd/MM/yyyy').format(_dueDate!),
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: _dueDate == null
+                              ? Colors.grey.shade600
+                              : null,
+                        ),
+                      ),
+                      if (_dueDate != null)
+                        IconButton(
+                          icon: const Icon(Icons.clear, size: 20),
+                          onPressed: () => setState(() => _dueDate = null),
+                          tooltip: 'Limpar data',
+                        )
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // --- Dropdown de Prioridade ---
+              DropdownButtonFormField<String>(
+                value: _priority,
                 decoration: const InputDecoration(
                   labelText: 'Prioridade',
                   prefixIcon: Icon(Icons.flag),
@@ -225,7 +356,7 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
 
               const SizedBox(height: 16),
 
-              // Switch de Completo
+              // --- Switch de Completo ---
               Card(
                 child: SwitchListTile(
                   title: const Text('Tarefa Completa'),
@@ -239,7 +370,9 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
                     setState(() => _completed = value);
                   },
                   secondary: Icon(
-                    _completed ? Icons.check_circle : Icons.radio_button_unchecked,
+                    _completed
+                        ? Icons.check_circle
+                        : Icons.radio_button_unchecked,
                     color: _completed ? Colors.green : Colors.grey,
                   ),
                 ),
@@ -247,11 +380,12 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
 
               const SizedBox(height: 24),
 
-              // Botão Salvar
+              // --- Botões ---
               ElevatedButton.icon(
                 onPressed: _saveTask,
                 icon: const Icon(Icons.save),
-                label: Text(isEditing ? 'Atualizar Tarefa' : 'Criar Tarefa'),
+                label:
+                Text(isEditing ? 'Atualizar Tarefa' : 'Criar Tarefa'),
                 style: ElevatedButton.styleFrom(
                   padding: const EdgeInsets.all(16),
                   backgroundColor: Colors.blue,
@@ -264,7 +398,6 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
 
               const SizedBox(height: 8),
 
-              // Botão Cancelar
               OutlinedButton.icon(
                 onPressed: () => Navigator.pop(context),
                 icon: const Icon(Icons.cancel),
