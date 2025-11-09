@@ -1,5 +1,3 @@
-# Relatório - Laboratório 2 (Resumido)
-
 ## 1. Implementações Realizadas
 * **Data de Vencimento:** Adicionado campo `dueDate` ao `Task`, implementado `DatePicker` no formulário e lógica de ordenação na lista principal.
 * **Alerta Visual:** Cards de tarefas vencidas (`isOverdue`) ganham destaque com borda vermelha e texto de aviso.
@@ -26,3 +24,8 @@
 * Implementar o **Exercício 3 (Notificações)** com lembretes agendados.
 * Criar um **CRUD de Categorias** (permitir ao usuário criar/editar/deletar suas próprias categorias).
 * Adicionar **gráficos de estatísticas** na tela inicial.
+
+## VIDEOS DEMONSTRAÇÃO
+
+### LAB UX e UI MELHORADA
+https://youtu.be/vw7oKdRmE7k
