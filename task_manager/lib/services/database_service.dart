@@ -1,7 +1,7 @@
-import 'package:sqflite/sqflite.dart';
+import 'dart:async';
 import 'package:path/path.dart';
+import 'package:sqflite/sqflite.dart';
 import '../models/task.dart';
-import '../models/category.dart'; // <-- 1. IMPORTE O NOVO MODELO
 
 class DatabaseService {
   static final DatabaseService instance = DatabaseService._init();
@@ -21,84 +21,87 @@ class DatabaseService {
 
     return await openDatabase(
       path,
-      version: 3, // <-- Versão 3 (para dueDate e categoryId)
+      // MODIFICADO: Versão aumentada para 5
+      version: 5,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
   }
 
   Future<void> _createDB(Database db, int version) async {
-    // 3. CRIA A TABELA DE CATEGORIAS
-    await db.execute('''
-      CREATE TABLE categories (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        color INTEGER NOT NULL
-      )
-    ''');
+    const idType = 'INTEGER PRIMARY KEY AUTOINCREMENT';
+    const textType = 'TEXT NOT NULL';
+    const intType = 'INTEGER NOT NULL';
 
-    // 4. CRIA A TABELA DE TAREFAS
     await db.execute('''
       CREATE TABLE tasks (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        description TEXT,
-        completed INTEGER NOT NULL,
-        priority TEXT NOT NULL,
-        createdAt TEXT NOT NULL,
-        dueDate TEXT, 
-        categoryId TEXT 
+        id $idType,
+        title $textType,
+        description $textType,
+        priority $textType,
+        completed $intType,
+        createdAt $textType,
+        
+        // MODIFICADO: 'photoPath' foi substituído por 'photoPaths'
+        // Armazenará uma string JSON (Ex: '["path1.jpg", "path2.jpg"]')
+        photoPaths TEXT NOT NULL DEFAULT '[]', 
+        
+        completedAt TEXT,
+        completedBy TEXT,
+        latitude REAL,
+        longitude REAL,
+        locationName TEXT
       )
     ''');
-
-    // 5. INSERE CATEGORIAS PADRÃO
-    await _insertDefaultCategories(db);
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // Migração para v2 (adiciona dueDate)
+    // Migração incremental para cada versão
     if (oldVersion < 2) {
-      await db.execute('ALTER TABLE tasks ADD COLUMN dueDate TEXT');
+      await db.execute('ALTER TABLE tasks ADD COLUMN photoPath TEXT');
     }
-    // 6. MIGRAÇÃO PARA v3 (adiciona categorias e categoryId)
     if (oldVersion < 3) {
-      await db.execute('''
-        CREATE TABLE categories (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          color INTEGER NOT NULL
-        )
-      ''');
-      await db.execute('ALTER TABLE tasks ADD COLUMN categoryId TEXT');
-      await _insertDefaultCategories(db);
+      await db.execute('ALTER TABLE tasks ADD COLUMN completedAt TEXT');
+      await db.execute('ALTER TABLE tasks ADD COLUMN completedBy TEXT');
     }
+    if (oldVersion < 4) {
+      await db.execute('ALTER TABLE tasks ADD COLUMN latitude REAL');
+      await db.execute('ALTER TABLE tasks ADD COLUMN longitude REAL');
+      await db.execute('ALTER TABLE tasks ADD COLUMN locationName TEXT');
+    }
+    // MODIFICADO: Nova migração para a versão 5
+    if (oldVersion < 5) {
+      // 1. Adiciona a nova coluna com um valor padrão de lista vazia '[]'
+      await db.execute("ALTER TABLE tasks ADD COLUMN photoPaths TEXT NOT NULL DEFAULT '[]'");
+
+      // 2. Migra a foto única (se existir) da coluna antiga 'photoPath'
+      // para a nova coluna 'photoPaths', formatando-a como uma lista JSON.
+      // Ex: "path/foto.jpg" se torna "[\"path/foto.jpg\"]"
+      await db.execute("UPDATE tasks SET photoPaths = '[\"' || photoPath || '\"]' WHERE photoPath IS NOT NULL AND photoPath != ''");
+
+      // 3. (Opcional) Poderíamos dropar a coluna 'photoPath' aqui,
+      // mas é complexo no SQLite. Apenas deixá-la "morta" é mais seguro.
+      // O model 'task.dart' não a usa mais de qualquer forma.
+    }
+
+    print('✅ Banco migrado de v$oldVersion para v$newVersion');
   }
 
-  // 7. MÉTODO PARA INSERIR CATEGORIAS PADRÃO
-  Future<void> _insertDefaultCategories(Database db) async {
-    await db.insert('categories', Category(name: 'Trabalho', color: 0xFF42A5F5).toMap()); // Azul
-    await db.insert('categories', Category(name: 'Estudos', color: 0xFFFFCA28).toMap()); // Amarelo
-    await db.insert('categories', Category(name: 'Pessoal', color: 0xFF66BB6A).toMap()); // Verde
-    await db.insert('categories', Category(name: 'Casa', color: 0xFFEF5350).toMap()); // Vermelho
-  }
-
-  // 8. NOVO MÉTODO PARA LER CATEGORIAS
-  Future<List<Category>> readAllCategories() async {
-    final db = await database;
-    final result = await db.query('categories', orderBy: 'name ASC');
-    return result.map((map) => Category.fromMap(map)).toList();
-  }
-
-  // (create, read, readAll, update, delete de Task)
+  // CRUD Methods
   Future<Task> create(Task task) async {
-    final db = await database;
-    await db.insert('tasks', task.toMap());
-    return task;
+    final db = await instance.database;
+    final id = await db.insert('tasks', task.toMap());
+    return task.copyWith(id: id);
   }
 
-  Future<Task?> read(String id) async {
-    final db = await database;
-    final maps = await db.query('tasks', where: 'id = ?', whereArgs: [id]);
+  Future<Task?> read(int id) async {
+    final db = await instance.database;
+    final maps = await db.query(
+      'tasks',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+
     if (maps.isNotEmpty) {
       return Task.fromMap(maps.first);
     }
@@ -106,19 +109,53 @@ class DatabaseService {
   }
 
   Future<List<Task>> readAll() async {
-    final db = await database;
-    const orderBy = 'dueDate IS NULL, dueDate ASC, createdAt DESC';
+    final db = await instance.database;
+    const orderBy = 'createdAt DESC';
     final result = await db.query('tasks', orderBy: orderBy);
-    return result.map((map) => Task.fromMap(map)).toList();
+    return result.map((json) => Task.fromMap(json)).toList();
   }
 
   Future<int> update(Task task) async {
-    final db = await database;
-    return db.update('tasks', task.toMap(), where: 'id = ?', whereArgs: [task.id]);
+    final db = await instance.database;
+    return db.update(
+      'tasks',
+      task.toMap(),
+      where: 'id = ?',
+      whereArgs: [task.id],
+    );
   }
 
-  Future<int> delete(String id) async {
-    final db = await database;
-    return await db.delete('tasks', where: 'id = ?', whereArgs: [id]);
+  Future<int> delete(int id) async {
+    final db = await instance.database;
+    return await db.delete(
+      'tasks',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // Método especial: buscar tarefas por proximidade
+  Future<List<Task>> getTasksNearLocation({
+    required double latitude,
+    required double longitude,
+    double radiusInMeters = 1000,
+  }) async {
+    final allTasks = await readAll();
+
+    return allTasks.where((task) {
+      if (!task.hasLocation) return false;
+
+      // Cálculo de distância usando fórmula de Haversine (simplificada)
+      final latDiff = (task.latitude! - latitude).abs();
+      final lonDiff = (task.longitude! - longitude).abs();
+      final distance = ((latDiff * 111000) + (lonDiff * 111000)) / 2;
+
+      return distance <= radiusInMeters;
+    }).toList();
+  }
+
+  Future close() async {
+    final db = await instance.database;
+    db.close();
   }
 }

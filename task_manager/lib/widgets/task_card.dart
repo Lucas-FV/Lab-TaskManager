@@ -1,35 +1,32 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import '../models/task.dart';
-import '../models/category.dart'; // <-- 1. IMPORTE CATEGORY
+// Removi o import do 'location_service.dart', pois não era usado aqui.
 
 class TaskCard extends StatelessWidget {
   final Task task;
-  final Category? category; // <-- 2. RECEBE A CATEGORIA
   final VoidCallback onTap;
-  final VoidCallback onToggle;
   final VoidCallback onDelete;
+  final Function(bool?) onCheckboxChanged;
 
   const TaskCard({
     super.key,
     required this.task,
-    this.category, // <-- 3. ADICIONA AO CONSTRUTOR
     required this.onTap,
-    required this.onToggle,
     required this.onDelete,
+    required this.onCheckboxChanged,
   });
 
-  // --- 4. FUNÇÕES DE PRIORIDADE (RE-ADICIONADAS) ---
   Color _getPriorityColor() {
     switch (task.priority) {
+      case 'urgent':
+        return Colors.red;
+      case 'high':
+        return Colors.orange;
+      case 'medium':
+        return Colors.amber;
       case 'low':
         return Colors.green;
-      case 'medium':
-        return Colors.orange;
-      case 'high':
-        return Colors.red;
-      case 'urgent':
-        return Colors.purple;
       default:
         return Colors.grey;
     }
@@ -39,6 +36,12 @@ class TaskCard extends StatelessWidget {
     switch (task.priority) {
       case 'urgent':
         return Icons.priority_high;
+      case 'high':
+        return Icons.arrow_upward;
+      case 'medium':
+        return Icons.remove;
+      case 'low':
+        return Icons.arrow_downward;
       default:
         return Icons.flag;
     }
@@ -46,254 +49,289 @@ class TaskCard extends StatelessWidget {
 
   String _getPriorityLabel() {
     switch (task.priority) {
-      case 'low':
-        return 'Baixa';
-      case 'medium':
-        return 'Média';
-      case 'high':
-        return 'Alta';
       case 'urgent':
         return 'Urgente';
-      default:
+      case 'high':
+        return 'Alta';
+      case 'medium':
         return 'Média';
+      case 'low':
+        return 'Baixa';
+      default:
+        return 'Normal';
     }
-  }
-
-  // --- Função ADICIONADA DO EXERCÍCIO 'dueDate' ---
-  bool _isPastDate(DateTime date) {
-    final today = DateTime.now();
-    final todayDateOnly = DateTime(today.year, today.month, today.day);
-    final dateOnly = DateTime(date.year, date.month, date.day);
-    return dateOnly.isBefore(todayDateOnly);
   }
 
   @override
   Widget build(BuildContext context) {
-    final bool isOverdue =
-        task.dueDate != null && !task.completed && _isPastDate(task.dueDate!);
-
-    // 5. DEFINE A COR DA CATEGORIA (ou cor padrão)
-    final Color categoryColor =
-        category?.displayColor ?? Colors.grey.shade400;
-
-    // Cor da Prioridade
-    final Color priorityColor = _getPriorityColor();
-
-    final createdAtFormat = DateFormat('dd/MM/yyyy HH:mm');
+    final priorityColor = _getPriorityColor();
 
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      elevation: task.completed ? 1 : (isOverdue ? 4 : 3),
+      elevation: 2,
+      margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        // --- 6. BORDA USA A COR DA CATEGORIA ---
         side: BorderSide(
-          color: isOverdue
-              ? Colors.red.shade700
-              : (task.completed ? Colors.grey.shade300 : categoryColor),
-          width: isOverdue ? 2.5 : 2,
+          color: task.completed
+              ? Colors.grey.shade300
+              : priorityColor.withOpacity(0.3),
+          width: 2,
         ),
       ),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            children: [
-              // Checkbox (sem alteração)
-              Checkbox(
-                value: task.completed,
-                onChanged: (_) => onToggle(),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ),
-              const SizedBox(width: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Checkbox(
+                    value: task.completed,
+                    onChanged: onCheckboxChanged,
+                    activeColor: Colors.green,
+                  ),
 
-              // Conteúdo Principal
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Título (sem alteração)
-                    Text(
-                      task.title,
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        decoration: task.completed
-                            ? TextDecoration.lineThrough
-                            : null,
-                        color: task.completed ? Colors.grey : Colors.black,
-                      ),
-                    ),
+                  const SizedBox(width: 8),
 
-                    // Descrição (sem alteração)
-                    if (task.description.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        task.description,
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: task.completed
-                              ? Colors.grey.shade400
-                              : Colors.grey.shade700,
-                          decoration: task.completed
-                              ? TextDecoration.lineThrough
-                              : null,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-
-                    const SizedBox(height: 8),
-
-                    // --- 7. LINHA DE METADADOS ATUALIZADA ---
-                    Wrap(
-                      spacing: 12, // Espaço horizontal
-                      runSpacing: 8, // Espaço vertical
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // 1. CHIP DE CATEGORIA
-                        if (category != null)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 4,
-                            ),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              color: categoryColor.withOpacity(0.1),
-                              border: Border.all(
-                                color: categoryColor,
-                                width: 1,
-                              ),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.folder_open_outlined,
-                                  size: 14,
-                                  color: categoryColor,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  category!.name,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: categoryColor,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-
-                        // 2. CHIP DE PRIORIDADE
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: priorityColor,
-                              width: 1,
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                _getPriorityIcon(),
-                                size: 14,
-                                color: priorityColor,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                _getPriorityLabel(),
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: priorityColor,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
+                        Text(
+                          task.title,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            decoration: task.completed
+                                ? TextDecoration.lineThrough
+                                : null,
+                            color: task.completed
+                                ? Colors.grey
+                                : Colors.black87,
                           ),
                         ),
 
-                        // 3. Data (Lógica do dueDate)
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
+                        if (task.description.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            task.description,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: task.completed
+                                  ? Colors.grey
+                                  : Colors.black54,
+                            ),
+                          ),
+                        ],
+
+                        const SizedBox(height: 8),
+
+                        // BADGES
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
                           children: [
-                            if (task.dueDate != null) ...[
-                              Icon(
-                                Icons.calendar_today,
-                                size: 14,
-                                color: isOverdue
-                                    ? Colors.red
-                                    : Colors.grey.shade600,
+                            // Prioridade
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
                               ),
-                              const SizedBox(width: 4),
-                              Text(
-                                'Vence: ${DateFormat('dd/MM/yyyy').format(task.dueDate!)}',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: isOverdue
-                                      ? Colors.red
-                                      : Colors.grey.shade600,
-                                  fontWeight: isOverdue
-                                      ? FontWeight.bold
-                                      : FontWeight.normal,
+                              decoration: BoxDecoration(
+                                color: priorityColor.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: priorityColor.withOpacity(0.5),
                                 ),
                               ),
-                              if (isOverdue)
-                                const Text(
-                                  ' - VENCIDA',
-                                  style: TextStyle(
-                                    color: Colors.red,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    _getPriorityIcon(),
+                                    size: 14,
+                                    color: priorityColor,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    _getPriorityLabel(),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                      color: priorityColor,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            // Foto (MODIFICADO)
+                            if (task.hasPhoto)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: Colors.blue.withOpacity(0.5),
                                   ),
                                 ),
-                            ] else ...[
-                              Icon(
-                                Icons.access_time,
-                                size: 14,
-                                color: Colors.grey.shade600,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                createdAtFormat.format(task.createdAt),
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey.shade600,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                      Icons.photo_camera,
+                                      size: 14,
+                                      color: Colors.blue,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    // Mostra a contagem de fotos
+                                    Text(
+                                      '${task.photoPaths.length} Foto${task.photoPaths.length > 1 ? 's' : ''}',
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w500,
+                                        color: Colors.blue,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                            ],
+
+                            // Localização
+                            if (task.hasLocation)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.purple.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: Colors.purple.withOpacity(0.5),
+                                  ),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.location_on,
+                                      size: 14,
+                                      color: Colors.purple,
+                                    ),
+                                    SizedBox(width: 4),
+                                    Text(
+                                      'Local',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w500,
+                                        color: Colors.purple,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                            // Shake
+                            if (task.completed && task.wasCompletedByShake)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.green.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: Colors.green.withOpacity(0.5),
+                                  ),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.vibration,
+                                      size: 14,
+                                      color: Colors.green,
+                                    ),
+                                    SizedBox(width: 4),
+                                    Text(
+                                      'Shake',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w500,
+                                        color: Colors.green,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
                           ],
                         ),
                       ],
                     ),
-                  ],
+                  ),
+
+                  IconButton(
+                    onPressed: onDelete,
+                    icon: const Icon(Icons.delete_outline),
+                    color: Colors.red,
+                    tooltip: 'Deletar',
+                  ),
+                ],
+              ),
+            ),
+
+            // PREVIEW DA FOTO (MODIFICADO)
+            if (task.hasPhoto)
+              ClipRRect(
+                borderRadius: const BorderRadius.only(
+                  bottomLeft: Radius.circular(12),
+                  bottomRight: Radius.circular(12),
+                ),
+                // Mostra a PRIMEIRA foto da lista
+                child: Image.file(
+                  File(task.photoPaths.first),
+                  width: double.infinity,
+                  height: 180,
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) {
+                    return Container(
+                      height: 180,
+                      color: Colors.grey[200],
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.broken_image_outlined,
+                            size: 48,
+                            color: Colors.grey[400],
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Foto não encontrada',
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ),
-
-              const SizedBox(width: 8),
-
-              // --- BOTÃO DE DELETAR CORRIGIDO ---
-              // O IconButton estava faltando aqui
-              IconButton(
-                onPressed: onDelete,
-                icon: const Icon(Icons.delete_outline),
-                color: Colors.red,
-                tooltip: 'Deletar tarefa',
-              ),
-            ],
-          ),
+          ],
         ),
       ),
     );

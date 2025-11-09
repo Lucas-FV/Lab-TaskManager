@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import '../models/task.dart';
-import '../models/category.dart'; // <-- 1. IMPORTAR O NOVO MODELO
+import '../services/camera_service.dart';
 import '../services/database_service.dart';
+import '../services/sensor_service.dart';
+import '../services/location_service.dart';
+import '../screens/task_form_screen.dart';
 import '../widgets/task_card.dart';
-import 'task_form_screen.dart';
 
 class TaskListScreen extends StatefulWidget {
   const TaskListScreen({super.key});
@@ -14,82 +16,223 @@ class TaskListScreen extends StatefulWidget {
 
 class _TaskListScreenState extends State<TaskListScreen> {
   List<Task> _tasks = [];
-  List<Category> _categories = []; // <-- 2. ADICIONAR LISTA DE CATEGORIAS
-  String _filter = 'all'; // all, completed, pending
-  String? _categoryFilter; // <-- 3. ADICIONAR FILTRO DE CATEGORIA
-  bool _isLoading = false;
+  String _filter = 'all';
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _loadData(); // <-- 4. MUDAR PARA FUNÇÃO ÚNICA DE LOAD
+    _loadTasks();
+    _setupShakeDetection(); // INICIAR SHAKE
   }
 
-  // 5. ATUALIZAR FUNÇÃO DE LOAD PARA CARREGAR TUDO
-  Future<void> _loadData() async {
-    setState(() => _isLoading = true);
+  @override
+  void dispose() {
+    SensorService.instance.stop(); // PARAR SHAKE
+    super.dispose();
+  }
 
-    // Carrega tarefas e categorias em paralelo
-    final tasksFuture = DatabaseService.instance.readAll();
-    final categoriesFuture = DatabaseService.instance.readAllCategories();
-
-    final results = await Future.wait([tasksFuture, categoriesFuture]);
-
-    setState(() {
-      _tasks = results[0] as List<Task>;
-      _categories = results[1] as List<Category>;
-      _isLoading = false;
+  // SHAKE DETECTION (Sem mudanças)
+  void _setupShakeDetection() {
+    SensorService.instance.startShakeDetection(() {
+      _showShakeDialog();
     });
   }
 
-  // 6. ATUALIZAR GETTER DE TAREFAS FILTRADAS
-  List<Task> get _filteredTasks {
-    List<Task> filtered;
+  void _showShakeDialog() {
+    final pendingTasks = _tasks.where((t) => !t.completed).toList();
 
-    // 1º: Filtra por Status (todas, pendentes, concluídas)
-    switch (_filter) {
-      case 'completed':
-        filtered = _tasks.where((t) => t.completed).toList();
-        break;
-      case 'pending':
-        filtered = _tasks.where((t) => !t.completed).toList();
-        break;
-      default:
-        filtered = _tasks.toList(); // Cria uma nova lista
+    if (pendingTasks.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('🎉 Nenhuma tarefa pendente!'),
+          backgroundColor: Colors.green,
+        ),
+      );
+      return;
     }
 
-    // 2º: Filtra por Categoria (se houver filtro aplicado)
-    if (_categoryFilter != null) {
-      filtered = filtered.where((t) => t.categoryId == _categoryFilter).toList();
-    }
-
-    return filtered;
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: const [
+            Icon(Icons.vibration, color: Colors.blue),
+            SizedBox(width: 8),
+            Expanded(child: Text('Shake detectado!')),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Selecione uma tarefa para completar:'),
+            const SizedBox(height: 16),
+            ...pendingTasks.take(3).map((task) => ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                task.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.check_circle, color: Colors.green),
+                onPressed: () => _completeTaskByShake(task),
+              ),
+            )),
+            if (pendingTasks.length > 3)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '+ ${pendingTasks.length - 3} outras',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                  ),
+                ),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
+        ],
+      ),
+    );
   }
 
-  // 7. HELPER PARA ENCONTRAR A CATEGORIA PELO ID
-  Category? _getCategoryById(String? id) {
-    if (id == null) return null;
+  Future<void> _completeTaskByShake(Task task) async {
     try {
-      // Encontra a primeira categoria que bate com o ID
-      return _categories.firstWhere((c) => c.id == id);
+      final updated = task.copyWith(
+        completed: true,
+        completedAt: DateTime.now(),
+        completedBy: 'shake',
+      );
+
+      await DatabaseService.instance.update(updated);
+      Navigator.pop(context);
+      await _loadTasks();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✅ "${task.title}" completa via shake!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
     } catch (e) {
-      // Retorna nulo se a categoria não for encontrada
-      return null;
+      Navigator.pop(context);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erro: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+  // --- FIM SHAKE ---
+
+  Future<void> _loadTasks() async {
+    setState(() => _isLoading = true);
+
+    try {
+      final tasks = await DatabaseService.instance.readAll();
+
+      if (mounted) {
+        setState(() {
+          _tasks = tasks;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erro ao carregar: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
-  Future<void> _toggleTask(Task task) async {
-    final updated = task.copyWith(completed: !task.completed);
-    await DatabaseService.instance.update(updated);
-    await _loadData(); // <-- 8. USAR _loadData
+  List<Task> get _filteredTasks {
+    switch (_filter) {
+      case 'pending':
+        return _tasks.where((t) => !t.completed).toList();
+      case 'completed':
+        return _tasks.where((t) => t.completed).toList();
+      case 'nearby':
+      // Implementar filtro de proximidade
+        return _tasks;
+      default:
+        return _tasks;
+    }
   }
 
+  Map<String, int> get _statistics {
+    final total = _tasks.length;
+    final completed = _tasks.where((t) => t.completed).length;
+    final pending = total - completed;
+    final completionRate = total > 0 ? ((completed / total) * 100).round() : 0;
+
+    return {
+      'total': total,
+      'completed': completed,
+      'pending': pending,
+      'completionRate': completionRate,
+    };
+  }
+
+  Future<void> _filterByNearby() async {
+    final position = await LocationService.instance.getCurrentLocation();
+
+    if (position == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('❌ Não foi possível obter localização'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
+    final nearbyTasks = await DatabaseService.instance.getTasksNearLocation(
+      latitude: position.latitude,
+      longitude: position.longitude,
+      radiusInMeters: 1000,
+    );
+
+    setState(() {
+      _tasks = nearbyTasks;
+      _filter = 'nearby';
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('📍 ${nearbyTasks.length} tarefa(s) próxima(s)'),
+          backgroundColor: Colors.blue,
+        ),
+      );
+    }
+  }
+
+  // --- MÉTODO _deleteTask (MODIFICADO) ---
   Future<void> _deleteTask(Task task) async {
-    final confirmed = await showDialog<bool>(
+    final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Confirmar exclusão'),
-        content: Text('Deseja realmente excluir "${task.title}"?'),
+        content: Text('Deseja deletar "${task.title}"?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -98,102 +241,99 @@ class _TaskListScreenState extends State<TaskListScreen> {
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Excluir'),
+            child: const Text('Deletar'),
           ),
         ],
       ),
     );
 
-    if (confirmed == true) {
-      await DatabaseService.instance.delete(task.id);
-      await _loadData(); // <-- 9. USAR _loadData
+    if (confirm == true) {
+      try {
+        // MODIFICADO: Verifica se há fotos e itera sobre a lista
+        if (task.hasPhoto) {
+          // Deleta CADA foto associada à tarefa
+          for (final path in task.photoPaths) {
+            await CameraService.instance.deletePhoto(path);
+          }
+        }
 
+        // Deleta a tarefa do banco
+        await DatabaseService.instance.delete(task.id!);
+        await _loadTasks();
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('🗑️ Tarefa deletada'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Erro: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }
+  // --- FIM DO MÉTODO _deleteTask ---
+
+  Future<void> _toggleComplete(Task task) async {
+    try {
+      final updated = task.copyWith(
+        completed: !task.completed,
+        completedAt: !task.completed ? DateTime.now() : null,
+        completedBy: !task.completed ? 'manual' : null,
+      );
+
+      await DatabaseService.instance.update(updated);
+      await _loadTasks();
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Tarefa excluída'),
-            duration: Duration(seconds: 2),
+          SnackBar(
+            content: Text('Erro: $e'),
+            backgroundColor: Colors.red,
           ),
         );
       }
     }
   }
 
-  Future<void> _openTaskForm([Task? task]) async {
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => TaskFormScreen(task: task),
-      ),
-    );
-
-    if (result == true) {
-      await _loadData(); // <-- 10. USAR _loadData
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
+    final stats = _statistics;
     final filteredTasks = _filteredTasks;
-    final stats = _calculateStats();
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Minhas Tarefas'),
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
-        elevation: 2,
         actions: [
-          // 11. NOVO BOTÃO DE FILTRO DE CATEGORIA
-          PopupMenuButton<String>(
-            icon: Icon(
-              Icons.category_outlined,
-              // Muda a cor do ícone se um filtro de categoria estiver ativo
-              color: _categoryFilter != null ? Colors.amberAccent : Colors.white,
-            ),
-            tooltip: 'Filtrar por Categoria',
-            onSelected: (value) {
-              setState(() {
-                _categoryFilter = (value == 'all') ? null : value;
-              });
-            },
-            itemBuilder: (context) => [
-              // Opção "Todas"
-              const PopupMenuItem(
-                value: 'all',
-                child: Row(children: [
-                  Icon(Icons.clear_all, color: Colors.black),
-                  SizedBox(width: 8),
-                  Text('Todas as Categorias'),
-                ]),
-              ),
-              // Separador
-              const PopupMenuDivider(),
-              // Lista de categorias do banco
-              ..._categories.map((category) {
-                return PopupMenuItem(
-                  value: category.id,
-                  child: Row(children: [
-                    Icon(Icons.circle, color: category.displayColor, size: 16),
-                    const SizedBox(width: 8),
-                    Text(category.name),
-                  ]),
-                );
-              }),
-            ],
-          ),
-
-          // Filtro de Status (seu filtro antigo)
           PopupMenuButton<String>(
             icon: const Icon(Icons.filter_list),
-            tooltip: 'Filtrar por Status',
-            onSelected: (value) => setState(() => _filter = value),
+            onSelected: (value) {
+              if (value == 'nearby') {
+                _filterByNearby();
+              } else {
+                setState(() {
+                  _filter = value;
+                  if (value != 'nearby') _loadTasks();
+                });
+              }
+            },
             itemBuilder: (context) => [
               const PopupMenuItem(
                 value: 'all',
                 child: Row(
                   children: [
-                    Icon(Icons.list),
+                    Icon(Icons.list_alt),
                     SizedBox(width: 8),
                     Text('Todas'),
                   ],
@@ -203,7 +343,7 @@ class _TaskListScreenState extends State<TaskListScreen> {
                 value: 'pending',
                 child: Row(
                   children: [
-                    Icon(Icons.pending_actions),
+                    Icon(Icons.pending_outlined),
                     SizedBox(width: 8),
                     Text('Pendentes'),
                   ],
@@ -213,31 +353,73 @@ class _TaskListScreenState extends State<TaskListScreen> {
                 value: 'completed',
                 child: Row(
                   children: [
-                    Icon(Icons.check_circle),
+                    Icon(Icons.check_circle_outline),
                     SizedBox(width: 8),
                     Text('Concluídas'),
                   ],
                 ),
               ),
+              const PopupMenuItem(
+                value: 'nearby',
+                child: Row(
+                  children: [
+                    Icon(Icons.near_me),
+                    SizedBox(width: 8),
+                    Text('Próximas'),
+                  ],
+                ),
+              ),
             ],
+          ),
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('💡 Dicas'),
+                  content: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: const [
+                      Text('• Toque no card para editar'),
+                      SizedBox(height: 8),
+                      Text('• Marque como completa com checkbox'),
+                      SizedBox(height: 8),
+                      Text('• Sacuda o celular para completar rápido!'),
+                      SizedBox(height: 8),
+                      Text('• Use filtros para organizar'),
+                      SizedBox(height: 8),
+                      Text('• Adicione fotos e localização'),
+                    ],
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Entendi'),
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
         ],
       ),
-
-      body: Column(
-        children: [
-          // Card de Estatísticas (sem alteração)
-          if (_tasks.isNotEmpty)
+      body: RefreshIndicator(
+        onRefresh: _loadTasks,
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : Column(
+          children: [
+            // CARD DE ESTATÍSTICAS
             Container(
               margin: const EdgeInsets.all(16),
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Colors.blue, Colors.blueAccent],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
+                gradient: LinearGradient(
+                  colors: [Colors.blue.shade400, Colors.blue.shade700],
                 ),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(16),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.blue.withOpacity(0.3),
@@ -249,73 +431,143 @@ class _TaskListScreenState extends State<TaskListScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _buildStatItem(
-                    Icons.list,
-                    'Total',
-                    stats['total'].toString(),
+                  _StatItem(
+                    label: 'Total',
+                    value: stats['total'].toString(),
+                    icon: Icons.list_alt,
                   ),
-                  _buildStatItem(
-                    Icons.pending_actions,
-                    'Pendentes',
-                    stats['pending'].toString(),
+                  Container(
+                    width: 1,
+                    height: 40,
+                    color: Colors.white.withOpacity(0.3),
                   ),
-                  _buildStatItem(
-                    Icons.check_circle,
-                    'Concluídas',
-                    stats['completed'].toString(),
+                  _StatItem(
+                    label: 'Concluídas',
+                    value: stats['completed'].toString(),
+                    icon: Icons.check_circle,
+                  ),
+                  Container(
+                    width: 1,
+                    height: 40,
+                    color: Colors.white.withOpacity(0.3),
+                  ),
+                  _StatItem(
+                    label: 'Taxa',
+                    value: '${stats['completionRate']}%',
+                    icon: Icons.trending_up,
                   ),
                 ],
               ),
             ),
 
-          // Lista de Tarefas
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : filteredTasks.isEmpty
-                ? _buildEmptyState() // <-- Atualizado
-                : RefreshIndicator(
-              onRefresh: _loadData, // <-- 12. USAR _loadData
-              child: ListView.builder(
-                padding: const EdgeInsets.only(bottom: 80),
+            // LISTA DE TAREFAS
+            Expanded(
+              child: filteredTasks.isEmpty
+                  ? _buildEmptyState()
+                  : ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 itemCount: filteredTasks.length,
                 itemBuilder: (context, index) {
                   final task = filteredTasks[index];
-                  // 13. ENCONTRA A CATEGORIA DA TAREFA
-                  final category = _getCategoryById(task.categoryId);
-
-                  // 14. PASSA A CATEGORIA PARA O CARD
+                  // Você precisará atualizar seu 'TaskCard'
+                  // para mostrar a galeria ou a primeira foto.
                   return TaskCard(
                     task: task,
-                    category: category,
-                    onTap: () => _openTaskForm(task),
-                    onToggle: () => _toggleTask(task),
+                    onTap: () async {
+                      final result = await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => TaskFormScreen(task: task),
+                        ),
+                      );
+                      if (result == true) _loadTasks();
+                    },
                     onDelete: () => _deleteTask(task),
+                    onCheckboxChanged: (value) => _toggleComplete(task),
                   );
                 },
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
-
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _openTaskForm(),
-        icon: const Icon(Icons.add),
-        label: const Text('Nova Tarefa'),
+        onPressed: () async {
+          final result = await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => const TaskFormScreen(),
+            ),
+          );
+          if (result == true) _loadTasks();
+        },
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
+        icon: const Icon(Icons.add),
+        label: const Text('Nova Tarefa'),
       ),
     );
   }
 
-  Widget _buildStatItem(IconData icon, String label, String value) {
-    // ... (sem alteração)
+  Widget _buildEmptyState() {
+    String message;
+    IconData icon;
+
+    switch (_filter) {
+      case 'pending':
+        message = '🎉 Nenhuma tarefa pendente!';
+        icon = Icons.check_circle_outline;
+        break;
+      case 'completed':
+        message = '📋 Nenhuma tarefa concluída ainda';
+        icon = Icons.pending_outlined;
+        break;
+      case 'nearby':
+        message = '📍 Nenhuma tarefa próxima';
+        icon = Icons.near_me;
+        break;
+      default:
+        message = '📝 Nenhuma tarefa ainda.\nToque em + para criar!';
+        icon = Icons.add_task;
+    }
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 80, color: Colors.grey[300]),
+          const SizedBox(height: 16),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 16,
+              color: Colors.grey[600],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatItem extends StatelessWidget {
+  final String label;
+  final String value;
+  final IconData icon;
+
+  const _StatItem({
+    required this.label,
+    required this.value,
+    required this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     return Column(
-      mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, color: Colors.white, size: 32),
-        const SizedBox(height: 4),
+        Icon(icon, color: Colors.white, size: 28),
+        const SizedBox(height: 8),
         Text(
           value,
           style: const TextStyle(
@@ -326,68 +578,12 @@ class _TaskListScreenState extends State<TaskListScreen> {
         ),
         Text(
           label,
-          style: const TextStyle(
-            color: Colors.white70,
+          style: TextStyle(
+            color: Colors.white.withOpacity(0.9),
             fontSize: 12,
           ),
         ),
       ],
     );
-  }
-
-  // 15. ATUALIZAR MENSAGEM DE ESTADO VAZIO
-  Widget _buildEmptyState() {
-    String message;
-    IconData icon;
-
-    // Verifica se o filtro de categoria é o motivo de estar vazio
-    if (_categoryFilter != null && _filteredTasks.isEmpty) {
-      message = 'Nenhuma tarefa nesta categoria';
-      icon = Icons.folder_off;
-    }
-    // Lógica antiga
-    else if (_filter == 'completed') {
-      message = 'Nenhuma tarefa concluída ainda';
-      icon = Icons.check_circle_outline;
-    } else if (_filter == 'pending') {
-      message = 'Nenhuma tarefa pendente';
-      icon = Icons.pending_actions;
-    } else {
-      message = 'Nenhuma tarefa cadastrada';
-      icon = Icons.task_alt;
-    }
-
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 100, color: Colors.grey.shade300),
-          const SizedBox(height: 16),
-          Text(
-            message,
-            style: TextStyle(
-              fontSize: 18,
-              color: Colors.grey.shade600,
-            ),
-          ),
-          const SizedBox(height: 8),
-          TextButton.icon(
-            onPressed: () => _openTaskForm(),
-            icon: const Icon(Icons.add),
-            label: const Text('Criar primeira tarefa'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Map<String, int> _calculateStats() {
-    // Calcula estatísticas sobre TODAS as tarefas, não apenas as filtradas.
-    // Isso está correto, não mude.
-    return {
-      'total': _tasks.length,
-      'completed': _tasks.where((t) => t.completed).length,
-      'pending': _tasks.where((t) => !t.completed).length,
-    };
   }
 }

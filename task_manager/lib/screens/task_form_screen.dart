@@ -1,17 +1,22 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import '../models/task.dart';
-import '../models/category.dart'; // <-- 1. IMPORTAR O NOVO MODELO
 import '../services/database_service.dart';
+import '../services/camera_service.dart';
+import '../services/location_service.dart';
+import '../widgets/location_picker.dart';
 
 class TaskFormScreen extends StatefulWidget {
-  final Task? task; // null = criar novo, não-null = editar
+  final Task? task;
 
   const TaskFormScreen({super.key, this.task});
 
   @override
   State<TaskFormScreen> createState() => _TaskFormScreenState();
 }
+
+// Enum para facilitar a escolha da fonte da imagem
+enum ImageSourceType { camera, gallery }
 
 class _TaskFormScreenState extends State<TaskFormScreen> {
   final _formKey = GlobalKey<FormState>();
@@ -20,49 +25,32 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
 
   String _priority = 'medium';
   bool _completed = false;
-  DateTime? _dueDate;
   bool _isLoading = false;
 
-  // --- 2. ADICIONAR VARIÁVEIS PARA CATEGORIA ---
-  List<Category> _categories = [];
-  String? _selectedCategoryId;
-  bool _isLoadingCategories = true;
+  // CÂMERA (MODIFICADO)
+  // Trocado de String? para List<String>
+  List<String> _photoPaths = [];
+
+  // GPS
+  double? _latitude;
+  double? _longitude;
+  String? _locationName;
 
   @override
   void initState() {
     super.initState();
 
-    // 3. CARREGAR AS CATEGORIAS
-    _loadCategories();
-
-    // Se estiver editando, preencher campos
     if (widget.task != null) {
       _titleController.text = widget.task!.title;
       _descriptionController.text = widget.task!.description;
       _priority = widget.task!.priority;
       _completed = widget.task!.completed;
-      _dueDate = widget.task!.dueDate;
-      _selectedCategoryId = widget.task!.categoryId; // <-- 4. INICIALIZAR CATEGORIA
+      // MODIFICADO: Carrega a lista
+      _photoPaths = List<String>.from(widget.task!.photoPaths);
+      _latitude = widget.task!.latitude;
+      _longitude = widget.task!.longitude;
+      _locationName = widget.task!.locationName;
     }
-  }
-
-  // 5. NOVA FUNÇÃO PARA CARREGAR CATEGORIAS
-  Future<void> _loadCategories() async {
-    setState(() => _isLoadingCategories = true);
-    // Busca as categorias do banco de dados
-    final categories = await DatabaseService.instance.readAllCategories();
-    setState(() {
-      _categories = categories;
-      _isLoadingCategories = false;
-
-      // Garante que o ID selecionado (na edição) é válido
-      if (widget.task != null && widget.task!.categoryId != null) {
-        final ids = categories.map((c) => c.id).toList();
-        if (!ids.contains(widget.task!.categoryId)) {
-          _selectedCategoryId = null;
-        }
-      }
-    });
   }
 
   @override
@@ -72,90 +60,228 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
     super.dispose();
   }
 
-  Future<void> _selectDueDate() async {
-    final pickedDate = await showDatePicker(
-      context: context,
-      initialDate: _dueDate ?? DateTime.now(),
-      firstDate: DateTime(2000),
-      lastDate: DateTime(2101),
-      helpText: 'Selecione a data de vencimento',
-    );
+  // --- CÂMERA METHODS ATUALIZADOS ---
 
-    if (pickedDate != null && pickedDate != _dueDate) {
-      setState(() {
-        _dueDate = pickedDate;
-      });
+  /// 1. Mostra o diálogo de escolha (Sem mudanças)
+  Future<void> _showImageSourceDialog() async {
+    await showModalBottomSheet(
+      context: context,
+      builder: (context) {
+        return SafeArea(
+          child: Wrap(
+            children: <Widget>[
+              ListTile(
+                leading: const Icon(Icons.photo_library),
+                title: const Text('Selecionar da Galeria'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  _pickImage(ImageSourceType.gallery);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_camera),
+                title: const Text('Tirar Foto com a Câmera'),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  _pickImage(ImageSourceType.camera);
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// 2. Chama o serviço e ADICIONA na lista
+  Future<void> _pickImage(ImageSourceType source) async {
+    setState(() => _isLoading = true);
+    String? photoPath;
+
+    try {
+      if (source == ImageSourceType.camera) {
+        photoPath = await CameraService.instance.takePicture(context);
+      } else {
+        photoPath = await CameraService.instance.pickFromGallery(context);
+      }
+
+      if (photoPath != null && mounted) {
+        // MODIFICADO: Adiciona a nova foto na lista
+        setState(() => _photoPaths.add(photoPath!));
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(source == ImageSourceType.camera
+                ? '📷 Foto capturada!'
+                : '🖼️ Foto selecionada!'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erro ao selecionar imagem: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
+  /// 3. Remover foto (MODIFICADO: Recebe o 'path' a ser removido)
+  void _removePhoto(String pathToRemove) {
+    // Deleta o arquivo físico
+    CameraService.instance.deletePhoto(pathToRemove);
+    // Remove da lista na tela
+    setState(() {
+      _photoPaths.remove(pathToRemove);
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('🗑️ Foto removida')),
+    );
+  }
+
+  /// 4. Visualizar foto (MODIFICADO: Recebe o 'path' a ser visto)
+  void _viewPhoto(String path) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            leading: IconButton(
+              icon: const Icon(Icons.close, color: Colors.white),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ),
+          body: Center(
+            child: InteractiveViewer(
+              child: Image.file(File(path), fit: BoxFit.contain),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // --- FIM DOS MÉTODOS DE CÂMERA ---
+
+  // GPS METHODS (Sem mudanças)
+  void _showLocationPicker() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: SingleChildScrollView(
+          child: LocationPicker(
+            initialLatitude: _latitude,
+            initialLongitude: _longitude,
+            initialAddress: _locationName,
+            onLocationSelected: (lat, lon, address) {
+              setState(() {
+                _latitude = lat;
+                _longitude = lon;
+                _locationName = address;
+              });
+              Navigator.pop(context);
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _removeLocation() {
+    setState(() {
+      _latitude = null;
+      _longitude = null;
+      _locationName = null;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('📍 Localização removida')),
+    );
+  }
+  // --- FIM DOS MÉTODOS DE GPS ---
+
+
+  // --- MÉTODO SALVAR (MODIFICADO) ---
   Future<void> _saveTask() async {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
+    if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
 
     try {
       if (widget.task == null) {
-        // Criar nova tarefa
+        // CRIAR
         final newTask = Task(
           title: _titleController.text.trim(),
           description: _descriptionController.text.trim(),
           priority: _priority,
           completed: _completed,
-          dueDate: _dueDate,
-          categoryId: _selectedCategoryId, // <-- 6. SALVAR A CATEGORIA
+          // MODIFICADO: Salva a lista de fotos
+          photoPaths: _photoPaths,
+          latitude: _latitude,
+          longitude: _longitude,
+          locationName: _locationName,
         );
         await DatabaseService.instance.create(newTask);
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('✓ Tarefa criada com sucesso'),
+              content: Text('✓ Tarefa criada'),
               backgroundColor: Colors.green,
-              duration: Duration(seconds: 2),
             ),
           );
         }
       } else {
-        // Atualizar tarefa existente
+        // ATUALIZAR
         final updatedTask = widget.task!.copyWith(
           title: _titleController.text.trim(),
           description: _descriptionController.text.trim(),
           priority: _priority,
           completed: _completed,
-          dueDate: _dueDate,
-          categoryId: _selectedCategoryId, // <-- 6. SALVAR A CATEGORIA
+          // MODIFICADO: Salva a lista de fotos
+          photoPaths: _photoPaths,
+          latitude: _latitude,
+          longitude: _longitude,
+          locationName: _locationName,
         );
         await DatabaseService.instance.update(updatedTask);
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('✓ Tarefa atualizada com sucesso'),
+              content: Text('✓ Tarefa atualizada'),
               backgroundColor: Colors.blue,
-              duration: Duration(seconds: 2),
             ),
           );
         }
       }
 
-      if (mounted) {
-        Navigator.pop(context, true); // Retorna true = sucesso
-      }
+      if (mounted) Navigator.pop(context, true);
+
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Erro ao salvar: $e'),
+            content: Text('Erro: $e'),
             backgroundColor: Colors.red,
           ),
         );
       }
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -169,8 +295,7 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
       ),
-      // 7. ATUALIZAR O BODY PARA MOSTRAR LOADING DE CATEGORIA
-      body: _isLoading || _isLoadingCategories
+      body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -179,7 +304,7 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // --- Campo de Título ---
+              // TÍTULO
               TextFormField(
                 controller: _titleController,
                 decoration: const InputDecoration(
@@ -191,10 +316,10 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
                 textCapitalization: TextCapitalization.sentences,
                 validator: (value) {
                   if (value == null || value.trim().isEmpty) {
-                    return 'Por favor, digite um título';
+                    return 'Digite um título';
                   }
                   if (value.trim().length < 3) {
-                    return 'Título deve ter pelo menos 3 caracteres';
+                    return 'Mínimo 3 caracteres';
                   }
                   return null;
                 },
@@ -203,101 +328,24 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
 
               const SizedBox(height: 16),
 
-              // --- Campo de Descrição ---
+              // DESCRIÇÃO
               TextFormField(
                 controller: _descriptionController,
                 decoration: const InputDecoration(
                   labelText: 'Descrição',
-                  hintText: 'Adicione mais detalhes...',
+                  hintText: 'Detalhes...',
                   prefixIcon: Icon(Icons.description),
                   border: OutlineInputBorder(),
                   alignLabelWithHint: true,
                 ),
-                textCapitalization: TextCapitalization.sentences,
-                maxLines: 5,
+                maxLines: 4,
                 maxLength: 500,
+                textCapitalization: TextCapitalization.sentences,
               ),
 
               const SizedBox(height: 16),
 
-              // --- 8. DROPDOWN DE CATEGORIA ADICIONADO ---
-              DropdownButtonFormField<String>(
-                value: _selectedCategoryId,
-                decoration: const InputDecoration(
-                  labelText: 'Categoria',
-                  prefixIcon: Icon(Icons.category_outlined),
-                  border: OutlineInputBorder(),
-                ),
-                isExpanded: true,
-                // Itens do Dropdown
-                items: [
-                  // Opção nula (Sem Categoria)
-                  const DropdownMenuItem(
-                    value: null,
-                    child: Text(
-                      'Nenhuma',
-                      style: TextStyle(fontStyle: FontStyle.italic),
-                    ),
-                  ),
-                  // Lista de categorias do banco
-                  ..._categories.map((category) {
-                    return DropdownMenuItem(
-                      value: category.id,
-                      child: Row(
-                        children: [
-                          Icon(Icons.circle,
-                              color: category.displayColor, size: 16),
-                          const SizedBox(width: 8),
-                          Text(category.name),
-                        ],
-                      ),
-                    );
-                  }),
-                ],
-                onChanged: (value) {
-                  setState(() => _selectedCategoryId = value);
-                },
-              ),
-
-              const SizedBox(height: 16),
-
-              // --- Campo de Data (DatePicker) ---
-              InputDecorator(
-                decoration: const InputDecoration(
-                  labelText: 'Data de Vencimento',
-                  prefixIcon: Icon(Icons.calendar_today),
-                  border: OutlineInputBorder(),
-                ),
-                child: InkWell(
-                  onTap: _selectDueDate,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        _dueDate == null
-                            ? 'Nenhuma data selecionada'
-                            : DateFormat('dd/MM/yyyy').format(_dueDate!),
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: _dueDate == null
-                              ? Colors.grey.shade600
-                              : null,
-                        ),
-                      ),
-                      if (_dueDate != null)
-                        IconButton(
-                          icon: const Icon(Icons.clear, size: 20),
-                          onPressed: () => setState(() => _dueDate = null),
-                          tooltip: 'Limpar data',
-                        )
-                    ],
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // --- Dropdown de Prioridade ---
+              // PRIORIDADE
               DropdownButtonFormField<String>(
                 value: _priority,
                 decoration: const InputDecoration(
@@ -306,106 +354,219 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
                   border: OutlineInputBorder(),
                 ),
                 items: const [
-                  DropdownMenuItem(
-                    value: 'low',
-                    child: Row(
-                      children: [
-                        Icon(Icons.flag, color: Colors.green),
-                        SizedBox(width: 8),
-                        Text('Baixa'),
-                      ],
-                    ),
-                  ),
-                  DropdownMenuItem(
-                    value: 'medium',
-                    child: Row(
-                      children: [
-                        Icon(Icons.flag, color: Colors.orange),
-                        SizedBox(width: 8),
-                        Text('Média'),
-                      ],
-                    ),
-                  ),
-                  DropdownMenuItem(
-                    value: 'high',
-                    child: Row(
-                      children: [
-                        Icon(Icons.flag, color: Colors.red),
-                        SizedBox(width: 8),
-                        Text('Alta'),
-                      ],
-                    ),
-                  ),
-                  DropdownMenuItem(
-                    value: 'urgent',
-                    child: Row(
-                      children: [
-                        Icon(Icons.flag, color: Colors.purple),
-                        SizedBox(width: 8),
-                        Text('Urgente'),
-                      ],
-                    ),
-                  ),
+                  DropdownMenuItem(value: 'low', child: Text('🟢 Baixa')),
+                  DropdownMenuItem(value: 'medium', child: Text('🟡 Média')),
+                  DropdownMenuItem(value: 'high', child: Text('🟠 Alta')),
+                  DropdownMenuItem(value: 'urgent', child: Text('🔴 Urgente')),
                 ],
                 onChanged: (value) {
-                  if (value != null) {
-                    setState(() => _priority = value);
-                  }
+                  if (value != null) setState(() => _priority = value);
                 },
-              ),
-
-              const SizedBox(height: 16),
-
-              // --- Switch de Completo ---
-              Card(
-                child: SwitchListTile(
-                  title: const Text('Tarefa Completa'),
-                  subtitle: Text(
-                    _completed
-                        ? 'Esta tarefa está marcada como concluída'
-                        : 'Esta tarefa ainda não foi concluída',
-                  ),
-                  value: _completed,
-                  onChanged: (value) {
-                    setState(() => _completed = value);
-                  },
-                  secondary: Icon(
-                    _completed
-                        ? Icons.check_circle
-                        : Icons.radio_button_unchecked,
-                    color: _completed ? Colors.green : Colors.grey,
-                  ),
-                ),
               ),
 
               const SizedBox(height: 24),
 
-              // --- Botões ---
-              ElevatedButton.icon(
-                onPressed: _saveTask,
-                icon: const Icon(Icons.save),
-                label:
-                Text(isEditing ? 'Atualizar Tarefa' : 'Criar Tarefa'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.all(16),
-                  backgroundColor: Colors.blue,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
+              // SWITCH COMPLETA
+              SwitchListTile(
+                title: const Text('Tarefa Completa'),
+                subtitle: Text(_completed ? 'Sim' : 'Não'),
+                value: _completed,
+                onChanged: (value) => setState(() => _completed = value),
+                activeColor: Colors.green,
+                secondary: Icon(
+                  _completed ? Icons.check_circle : Icons.radio_button_unchecked,
+                  color: _completed ? Colors.green : Colors.grey,
                 ),
               ),
 
-              const SizedBox(height: 8),
+              const Divider(height: 32),
 
-              OutlinedButton.icon(
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.cancel),
-                label: const Text('Cancelar'),
-                style: OutlinedButton.styleFrom(
+              // --- SEÇÃO FOTO (MODIFICADA PARA GALERIA) ---
+              Row(
+                children: [
+                  const Icon(Icons.photo_camera, color: Colors.blue),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Fotos (${_photoPaths.length})', // Mostra a contagem
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  // (O botão "Remover" daqui foi movido para cada foto)
+                ],
+              ),
+
+              const SizedBox(height: 12),
+
+              // Este container vai segurar nossa galeria horizontal
+              Container(
+                height: 120, // Altura fixa para a galeria
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.grey.shade300),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  // Adicionamos +1 para o botão de "Adicionar"
+                  itemCount: _photoPaths.length + 1,
+                  padding: const EdgeInsets.all(8.0),
+                  itemBuilder: (context, index) {
+
+                    // O último item é sempre o botão de adicionar
+                    if (index == _photoPaths.length) {
+                      return Padding(
+                        padding: const EdgeInsets.only(left: 4.0),
+                        child: SizedBox(
+                          width: 100,
+                          child: OutlinedButton(
+                            onPressed: _isLoading ? null : _showImageSourceDialog,
+                            style: OutlinedButton.styleFrom(
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            child: const Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.add_a_photo),
+                                SizedBox(height: 4),
+                                Text('Adicionar', style: TextStyle(fontSize: 12)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    }
+
+                    // Se não for o último, é um card de foto
+                    final photoPath = _photoPaths[index];
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 8.0),
+                      child: SizedBox(
+                        width: 100,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            // A Imagem (com Gesto para ver)
+                            GestureDetector(
+                              onTap: () => _viewPhoto(photoPath),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.file(
+                                  File(photoPath),
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                            ),
+
+                            // O Botão de Remover (no canto)
+                            Positioned(
+                              top: -8,
+                              right: -8,
+                              child: IconButton(
+                                visualDensity: VisualDensity.compact,
+                                onPressed: _isLoading ? null : () => _removePhoto(photoPath),
+                                icon: const Icon(
+                                  Icons.remove_circle,
+                                  color: Colors.red,
+                                  shadows: [
+                                    Shadow(color: Colors.white, blurRadius: 4)
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              // --- FIM DA SEÇÃO FOTO ---
+
+              const Divider(height: 32),
+
+              // SEÇÃO LOCALIZAÇÃO
+              Row(
+                children: [
+                  const Icon(Icons.location_on, color: Colors.blue),
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Localização',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (_latitude != null)
+                    TextButton.icon(
+                      // Desabilita o botão se estiver carregando
+                      onPressed: _isLoading ? null : _removeLocation,
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      label: const Text('Remover'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.red,
+                      ),
+                    ),
+                ],
+              ),
+
+              const SizedBox(height: 12),
+
+              if (_latitude != null && _longitude != null)
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.location_on, color: Colors.blue),
+                    title: Text(_locationName ?? 'Localização salva'),
+                    subtitle: Text(
+                      LocationService.instance.formatCoordinates(
+                        _latitude!,
+                        _longitude!,
+                      ),
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.edit),
+                      // Desabilita o botão se estiver carregando
+                      onPressed: _isLoading ? null : _showLocationPicker,
+                    ),
+                  ),
+                )
+              else
+                OutlinedButton.icon(
+                  // Desabilita o botão se estiver carregando
+                  onPressed: _isLoading ? null : _showLocationPicker,
+                  icon: const Icon(Icons.add_location),
+                  label: const Text('Adicionar Localização'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.all(16),
+                  ),
+                ),
+
+              const SizedBox(height: 32),
+
+              // BOTÃO SALVAR
+              ElevatedButton.icon(
+                onPressed: _isLoading ? null : _saveTask,
+                icon: _isLoading
+                    ? Container( // Mostra um spinner no botão
+                  width: 18,
+                  height: 18,
+                  child: const CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2,
+                  ),
+                )
+                    : const Icon(Icons.save),
+                label: Text(isEditing ? 'Atualizar' : 'Criar Tarefa'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue,
+                  foregroundColor: Colors.white,
                   padding: const EdgeInsets.all(16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
+                  textStyle: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
               ),
