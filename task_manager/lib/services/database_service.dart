@@ -21,8 +21,8 @@ class DatabaseService {
 
     return await openDatabase(
       path,
-      // MODIFICADO: Versão aumentada para 5
-      version: 5,
+      // MUDANÇA 1: Incrementamos a versão para 6 para aplicar a nova migração
+      version: 6,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -33,6 +33,7 @@ class DatabaseService {
     const textType = 'TEXT NOT NULL';
     const intType = 'INTEGER NOT NULL';
 
+    // Tabela de Tarefas
     await db.execute('''
       CREATE TABLE tasks (
         id $idType,
@@ -41,11 +42,7 @@ class DatabaseService {
         priority $textType,
         completed $intType,
         createdAt $textType,
-        
-        // MODIFICADO: 'photoPath' foi substituído por 'photoPaths'
-        // Armazenará uma string JSON (Ex: '["path1.jpg", "path2.jpg"]')
         photoPaths TEXT NOT NULL DEFAULT '[]', 
-        
         completedAt TEXT,
         completedBy TEXT,
         latitude REAL,
@@ -53,10 +50,21 @@ class DatabaseService {
         locationName TEXT
       )
     ''');
+
+    // MUDANÇA 2: Criamos a tabela sync_queue para novas instalações
+    await db.execute('''
+      CREATE TABLE sync_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        action TEXT NOT NULL, 
+        task_id INTEGER,
+        payload TEXT,
+        createdAt TEXT
+      )
+    ''');
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // Migração incremental para cada versão
+    // Migrações legadas (v1 a v5)
     if (oldVersion < 2) {
       await db.execute('ALTER TABLE tasks ADD COLUMN photoPath TEXT');
     }
@@ -69,25 +77,29 @@ class DatabaseService {
       await db.execute('ALTER TABLE tasks ADD COLUMN longitude REAL');
       await db.execute('ALTER TABLE tasks ADD COLUMN locationName TEXT');
     }
-    // MODIFICADO: Nova migração para a versão 5
     if (oldVersion < 5) {
-      // 1. Adiciona a nova coluna com um valor padrão de lista vazia '[]'
       await db.execute("ALTER TABLE tasks ADD COLUMN photoPaths TEXT NOT NULL DEFAULT '[]'");
-
-      // 2. Migra a foto única (se existir) da coluna antiga 'photoPath'
-      // para a nova coluna 'photoPaths', formatando-a como uma lista JSON.
-      // Ex: "path/foto.jpg" se torna "[\"path/foto.jpg\"]"
       await db.execute("UPDATE tasks SET photoPaths = '[\"' || photoPath || '\"]' WHERE photoPath IS NOT NULL AND photoPath != ''");
-
-      // 3. (Opcional) Poderíamos dropar a coluna 'photoPath' aqui,
-      // mas é complexo no SQLite. Apenas deixá-la "morta" é mais seguro.
-      // O model 'task.dart' não a usa mais de qualquer forma.
     }
 
-    print('✅ Banco migrado de v$oldVersion para v$newVersion');
+    // MUDANÇA 3: Migração para v6 - Criação da tabela de fila de sincronização
+    // Requisito: "Implementar a tabela sync_queue no SQLite"
+    if (oldVersion < 6) {
+      await db.execute('''
+        CREATE TABLE sync_queue (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          action TEXT NOT NULL, -- Valores: 'CREATE', 'UPDATE', 'DELETE'
+          task_id INTEGER,      -- ID da tarefa afetada
+          payload TEXT,         -- JSON completo da tarefa (para Create/Update)
+          createdAt TEXT        -- Para garantir a ordem cronológica
+        )
+      ''');
+      print('✅ Banco migrado para v6 (Fila de Sincronização criada)');
+    }
   }
 
-  // CRUD Methods
+  // --- MÉTODOS CRUD DE TAREFAS (Mantidos iguais) ---
+
   Future<Task> create(Task task) async {
     final db = await instance.database;
     final id = await db.insert('tasks', task.toMap());
@@ -134,7 +146,6 @@ class DatabaseService {
     );
   }
 
-  // Método especial: buscar tarefas por proximidade
   Future<List<Task>> getTasksNearLocation({
     required double latitude,
     required double longitude,
@@ -144,14 +155,48 @@ class DatabaseService {
 
     return allTasks.where((task) {
       if (!task.hasLocation) return false;
-
-      // Cálculo de distância usando fórmula de Haversine (simplificada)
       final latDiff = (task.latitude! - latitude).abs();
       final lonDiff = (task.longitude! - longitude).abs();
       final distance = ((latDiff * 111000) + (lonDiff * 111000)) / 2;
-
       return distance <= radiusInMeters;
     }).toList();
+  }
+
+  // --- NOVOS MÉTODOS: FILA DE SINCRONIZAÇÃO (OFFLINE-FIRST) ---
+
+  // 1. Adicionar ação à fila
+  Future<int> addToQueue(String action, int taskId, String payload) async {
+    final db = await instance.database;
+    return await db.insert('sync_queue', {
+      'action': action,
+      'task_id': taskId,
+      'payload': payload,
+      'createdAt': DateTime.now().toIso8601String(),
+    });
+  }
+
+  // 2. Ler toda a fila (Ordenada por criação para processar na ordem certa)
+  Future<List<Map<String, dynamic>>> getSyncQueue() async {
+    final db = await instance.database;
+    return await db.query('sync_queue', orderBy: 'createdAt ASC');
+  }
+
+  // 3. Remover item da fila (Chamado após sucesso na API)
+  Future<int> removeFromQueue(int id) async {
+    final db = await instance.database;
+    return await db.delete('sync_queue', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // 4. Verificar se uma tarefa específica tem pendências (Para a UI pintar o ícone laranja)
+  Future<bool> isTaskUnsynced(int taskId) async {
+    final db = await instance.database;
+    final result = await db.query(
+      'sync_queue',
+      where: 'task_id = ?',
+      whereArgs: [taskId],
+      limit: 1,
+    );
+    return result.isNotEmpty;
   }
 
   Future close() async {

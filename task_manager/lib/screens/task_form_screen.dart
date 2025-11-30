@@ -1,7 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../models/task.dart';
-import '../services/database_service.dart';
+// REMOVIDO: import '../services/database_service.dart'; // Não chamamos mais o banco direto aqui
+import '../services/sync_service.dart'; // ADICIONADO: Usamos o SyncService
 import '../services/camera_service.dart';
 import '../services/location_service.dart';
 import '../widgets/location_picker.dart';
@@ -15,7 +16,6 @@ class TaskFormScreen extends StatefulWidget {
   State<TaskFormScreen> createState() => _TaskFormScreenState();
 }
 
-// Enum para facilitar a escolha da fonte da imagem
 enum ImageSourceType { camera, gallery }
 
 class _TaskFormScreenState extends State<TaskFormScreen> {
@@ -27,11 +27,8 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
   bool _completed = false;
   bool _isLoading = false;
 
-  // CÂMERA (MODIFICADO)
-  // Trocado de String? para List<String>
   List<String> _photoPaths = [];
 
-  // GPS
   double? _latitude;
   double? _longitude;
   String? _locationName;
@@ -39,13 +36,11 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
   @override
   void initState() {
     super.initState();
-
     if (widget.task != null) {
       _titleController.text = widget.task!.title;
       _descriptionController.text = widget.task!.description;
       _priority = widget.task!.priority;
       _completed = widget.task!.completed;
-      // MODIFICADO: Carrega a lista
       _photoPaths = List<String>.from(widget.task!.photoPaths);
       _latitude = widget.task!.latitude;
       _longitude = widget.task!.longitude;
@@ -60,9 +55,7 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
     super.dispose();
   }
 
-  // --- CÂMERA METHODS ATUALIZADOS ---
-
-  /// 1. Mostra o diálogo de escolha (Sem mudanças)
+  // --- MÉTODOS DE CÂMERA (Mantidos iguais) ---
   Future<void> _showImageSourceDialog() async {
     await showModalBottomSheet(
       context: context,
@@ -93,12 +86,10 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
     );
   }
 
-  /// 2. Chama o serviço e ADICIONA na lista
   Future<void> _pickImage(ImageSourceType source) async {
     setState(() => _isLoading = true);
-    String? photoPath;
-
     try {
+      String? photoPath;
       if (source == ImageSourceType.camera) {
         photoPath = await CameraService.instance.takePicture(context);
       } else {
@@ -106,9 +97,7 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
       }
 
       if (photoPath != null && mounted) {
-        // MODIFICADO: Adiciona a nova foto na lista
         setState(() => _photoPaths.add(photoPath!));
-
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(source == ImageSourceType.camera
@@ -122,10 +111,7 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Erro ao selecionar imagem: $e'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Erro: $e'), backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -133,11 +119,8 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
     }
   }
 
-  /// 3. Remover foto (MODIFICADO: Recebe o 'path' a ser removido)
   void _removePhoto(String pathToRemove) {
-    // Deleta o arquivo físico
     CameraService.instance.deletePhoto(pathToRemove);
-    // Remove da lista na tela
     setState(() {
       _photoPaths.remove(pathToRemove);
     });
@@ -146,7 +129,6 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
     );
   }
 
-  /// 4. Visualizar foto (MODIFICADO: Recebe o 'path' a ser visto)
   void _viewPhoto(String path) {
     Navigator.push(
       context,
@@ -171,17 +153,13 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
     );
   }
 
-  // --- FIM DOS MÉTODOS DE CÂMERA ---
-
-  // GPS METHODS (Sem mudanças)
+  // --- MÉTODOS DE GPS (Mantidos iguais) ---
   void _showLocationPicker() {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       builder: (context) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).viewInsets.bottom,
-        ),
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
         child: SingleChildScrollView(
           child: LocationPicker(
             initialLatitude: _latitude,
@@ -211,71 +189,51 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
       const SnackBar(content: Text('📍 Localização removida')),
     );
   }
-  // --- FIM DOS MÉTODOS DE GPS ---
 
-
-  // --- MÉTODO SALVAR (MODIFICADO) ---
+  // --- MÉTODO SALVAR (MODIFICADO PARA OFFLINE-FIRST) ---
   Future<void> _saveTask() async {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
 
     try {
-      if (widget.task == null) {
-        // CRIAR
-        final newTask = Task(
-          title: _titleController.text.trim(),
-          description: _descriptionController.text.trim(),
-          priority: _priority,
-          completed: _completed,
-          // MODIFICADO: Salva a lista de fotos
-          photoPaths: _photoPaths,
-          latitude: _latitude,
-          longitude: _longitude,
-          locationName: _locationName,
-        );
-        await DatabaseService.instance.create(newTask);
+      // 1. Monta o objeto Task com os dados do formulário
+      final taskData = Task(
+        id: widget.task?.id, // Mantém o ID se for edição
+        title: _titleController.text.trim(),
+        description: _descriptionController.text.trim(),
+        priority: _priority,
+        completed: _completed,
+        photoPaths: _photoPaths,
+        latitude: _latitude,
+        longitude: _longitude,
+        locationName: _locationName,
+        createdAt: widget.task?.createdAt, // Mantém data de criação original
+      );
 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('✓ Tarefa criada'),
-              backgroundColor: Colors.green,
-            ),
-          );
-        }
-      } else {
-        // ATUALIZAR
-        final updatedTask = widget.task!.copyWith(
-          title: _titleController.text.trim(),
-          description: _descriptionController.text.trim(),
-          priority: _priority,
-          completed: _completed,
-          // MODIFICADO: Salva a lista de fotos
-          photoPaths: _photoPaths,
-          latitude: _latitude,
-          longitude: _longitude,
-          locationName: _locationName,
-        );
-        await DatabaseService.instance.update(updatedTask);
+      // 2. Chama o SyncService ao invés do DatabaseService
+      // O segundo parâmetro indica se é uma atualização (true) ou criação (false)
+      final isEditing = widget.task != null;
 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('✓ Tarefa atualizada'),
-              backgroundColor: Colors.blue,
-            ),
-          );
-        }
+      await SyncService.instance.saveTask(taskData, isEditing);
+
+      if (mounted) {
+        // Mensagem de sucesso genérica (o SyncService já cuidou da lógica de fila)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(isEditing ? '✓ Tarefa salva!' : '✓ Tarefa criada!'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        Navigator.pop(context, true);
       }
-
-      if (mounted) Navigator.pop(context, true);
 
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Erro: $e'),
+            content: Text('Erro ao salvar: $e'),
             backgroundColor: Colors.red,
           ),
         );
@@ -309,23 +267,17 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
                 controller: _titleController,
                 decoration: const InputDecoration(
                   labelText: 'Título *',
-                  hintText: 'Ex: Estudar Flutter',
                   prefixIcon: Icon(Icons.title),
                   border: OutlineInputBorder(),
                 ),
                 textCapitalization: TextCapitalization.sentences,
                 validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Digite um título';
-                  }
-                  if (value.trim().length < 3) {
-                    return 'Mínimo 3 caracteres';
-                  }
+                  if (value == null || value.trim().isEmpty) return 'Digite um título';
+                  if (value.trim().length < 3) return 'Mínimo 3 caracteres';
                   return null;
                 },
                 maxLength: 100,
               ),
-
               const SizedBox(height: 16),
 
               // DESCRIÇÃO
@@ -333,16 +285,13 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
                 controller: _descriptionController,
                 decoration: const InputDecoration(
                   labelText: 'Descrição',
-                  hintText: 'Detalhes...',
                   prefixIcon: Icon(Icons.description),
                   border: OutlineInputBorder(),
-                  alignLabelWithHint: true,
                 ),
                 maxLines: 4,
                 maxLength: 500,
                 textCapitalization: TextCapitalization.sentences,
               ),
-
               const SizedBox(height: 16),
 
               // PRIORIDADE
@@ -363,7 +312,6 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
                   if (value != null) setState(() => _priority = value);
                 },
               ),
-
               const SizedBox(height: 24),
 
               // SWITCH COMPLETA
@@ -378,42 +326,28 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
                   color: _completed ? Colors.green : Colors.grey,
                 ),
               ),
-
               const Divider(height: 32),
 
-              // --- SEÇÃO FOTO (MODIFICADA PARA GALERIA) ---
+              // --- SEÇÃO FOTO ---
               Row(
                 children: [
                   const Icon(Icons.photo_camera, color: Colors.blue),
                   const SizedBox(width: 8),
-                  Text(
-                    'Fotos (${_photoPaths.length})', // Mostra a contagem
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  // (O botão "Remover" daqui foi movido para cada foto)
+                  Text('Fotos (${_photoPaths.length})', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ],
               ),
-
               const SizedBox(height: 12),
-
-              // Este container vai segurar nossa galeria horizontal
               Container(
-                height: 120, // Altura fixa para a galeria
+                height: 120,
                 decoration: BoxDecoration(
                   border: Border.all(color: Colors.grey.shade300),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: ListView.builder(
                   scrollDirection: Axis.horizontal,
-                  // Adicionamos +1 para o botão de "Adicionar"
                   itemCount: _photoPaths.length + 1,
                   padding: const EdgeInsets.all(8.0),
                   itemBuilder: (context, index) {
-
-                    // O último item é sempre o botão de adicionar
                     if (index == _photoPaths.length) {
                       return Padding(
                         padding: const EdgeInsets.only(left: 4.0),
@@ -421,25 +355,15 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
                           width: 100,
                           child: OutlinedButton(
                             onPressed: _isLoading ? null : _showImageSourceDialog,
-                            style: OutlinedButton.styleFrom(
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                            ),
+                            style: OutlinedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
                             child: const Column(
                               mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.add_a_photo),
-                                SizedBox(height: 4),
-                                Text('Adicionar', style: TextStyle(fontSize: 12)),
-                              ],
+                              children: [Icon(Icons.add_a_photo), SizedBox(height: 4), Text('Adicionar', style: TextStyle(fontSize: 12))],
                             ),
                           ),
                         ),
                       );
                     }
-
-                    // Se não for o último, é um card de foto
                     final photoPath = _photoPaths[index];
                     return Padding(
                       padding: const EdgeInsets.only(right: 8.0),
@@ -448,32 +372,19 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
                         child: Stack(
                           fit: StackFit.expand,
                           children: [
-                            // A Imagem (com Gesto para ver)
                             GestureDetector(
                               onTap: () => _viewPhoto(photoPath),
                               child: ClipRRect(
                                 borderRadius: BorderRadius.circular(8),
-                                child: Image.file(
-                                  File(photoPath),
-                                  fit: BoxFit.cover,
-                                ),
+                                child: Image.file(File(photoPath), fit: BoxFit.cover),
                               ),
                             ),
-
-                            // O Botão de Remover (no canto)
                             Positioned(
-                              top: -8,
-                              right: -8,
+                              top: -8, right: -8,
                               child: IconButton(
                                 visualDensity: VisualDensity.compact,
                                 onPressed: _isLoading ? null : () => _removePhoto(photoPath),
-                                icon: const Icon(
-                                  Icons.remove_circle,
-                                  color: Colors.red,
-                                  shadows: [
-                                    Shadow(color: Colors.white, blurRadius: 4)
-                                  ],
-                                ),
+                                icon: const Icon(Icons.remove_circle, color: Colors.red, shadows: [Shadow(color: Colors.white, blurRadius: 4)]),
                               ),
                             ),
                           ],
@@ -483,7 +394,6 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
                   },
                 ),
               ),
-              // --- FIM DA SEÇÃO FOTO ---
 
               const Divider(height: 32),
 
@@ -492,82 +402,51 @@ class _TaskFormScreenState extends State<TaskFormScreen> {
                 children: [
                   const Icon(Icons.location_on, color: Colors.blue),
                   const SizedBox(width: 8),
-                  const Text(
-                    'Localização',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                  const Text('Localização', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   const Spacer(),
                   if (_latitude != null)
                     TextButton.icon(
-                      // Desabilita o botão se estiver carregando
                       onPressed: _isLoading ? null : _removeLocation,
                       icon: const Icon(Icons.delete_outline, size: 18),
                       label: const Text('Remover'),
-                      style: TextButton.styleFrom(
-                        foregroundColor: Colors.red,
-                      ),
+                      style: TextButton.styleFrom(foregroundColor: Colors.red),
                     ),
                 ],
               ),
-
               const SizedBox(height: 12),
-
               if (_latitude != null && _longitude != null)
                 Card(
                   child: ListTile(
                     leading: const Icon(Icons.location_on, color: Colors.blue),
                     title: Text(_locationName ?? 'Localização salva'),
-                    subtitle: Text(
-                      LocationService.instance.formatCoordinates(
-                        _latitude!,
-                        _longitude!,
-                      ),
-                    ),
+                    subtitle: Text(LocationService.instance.formatCoordinates(_latitude!, _longitude!)),
                     trailing: IconButton(
                       icon: const Icon(Icons.edit),
-                      // Desabilita o botão se estiver carregando
                       onPressed: _isLoading ? null : _showLocationPicker,
                     ),
                   ),
                 )
               else
                 OutlinedButton.icon(
-                  // Desabilita o botão se estiver carregando
                   onPressed: _isLoading ? null : _showLocationPicker,
                   icon: const Icon(Icons.add_location),
                   label: const Text('Adicionar Localização'),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.all(16),
-                  ),
+                  style: OutlinedButton.styleFrom(padding: const EdgeInsets.all(16)),
                 ),
-
               const SizedBox(height: 32),
 
               // BOTÃO SALVAR
               ElevatedButton.icon(
                 onPressed: _isLoading ? null : _saveTask,
                 icon: _isLoading
-                    ? Container( // Mostra um spinner no botão
-                  width: 18,
-                  height: 18,
-                  child: const CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2,
-                  ),
-                )
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                     : const Icon(Icons.save),
                 label: Text(isEditing ? 'Atualizar' : 'Criar Tarefa'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.blue,
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.all(16),
-                  textStyle: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                 ),
               ),
             ],

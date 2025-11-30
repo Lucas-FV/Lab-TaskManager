@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
 import 'services/camera_service.dart';
+import 'services/sync_service.dart'; // Importe o SyncService
 import 'screens/task_list_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Inicializar câmera
+  // Inicializar serviços
   await CameraService.instance.initialize();
+
+  // MODIFICADO: Inicializa o SyncService para monitorar rede e filas
+  SyncService.instance.initialize();
 
   runApp(const MyApp());
 }
@@ -17,7 +21,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Task Manager Pro',
+      title: 'Task Manager Offline-First', // Título atualizado
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
